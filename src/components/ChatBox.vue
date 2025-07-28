@@ -20,7 +20,12 @@
             alt="user"
           />
         </div>
-        <div class="bubble">
+        <div
+          class="bubble"
+          v-if="msg.sender === 'bot'"
+          v-html="formatBotText(msg.text)"
+        />
+        <div class="bubble" v-else>
           <p>{{ msg.text }}</p>
         </div>
       </div>
@@ -57,12 +62,132 @@ export default {
       loading: false
     }
   },
+  async mounted() {
+    // Gọi API lịch sử chat khi component được mount
+    await this.loadChatHistory()
+  },
   methods: {
+    async loadChatHistory() {
+      const user_id = localStorage.getItem('user_id')
+      if (!user_id) {
+        console.log('Không tìm thấy user_id')
+        return
+      }
+
+      console.log('Đang tải lịch sử chat cho user_id:', user_id)
+
+      try {
+        const response = await axios.get(
+          `http://localhost:8000/history/${user_id}`,
+          {
+            headers: {
+              'Authorization': `Bearer ${localStorage.getItem('token')}`,
+            }
+          }
+        )
+        
+        console.log('Response từ API history:', response.data)
+        
+        // Xử lý dữ liệu lịch sử chat
+        if (response.data && response.data.history && Array.isArray(response.data.history)) {
+          // API trả về format { history: [...], total: 2, ... }
+          let rawMessages = response.data.history.map(item => {
+            console.log('Processing item:', item)
+            return {
+              sender: item.role === 'user' ? 'user' : 'bot',
+              text: item.content || item.message || item.text || '',
+              user_id: user_id,
+              timestamp: new Date(item.timestamp).getTime() // Convert string timestamp to number
+            }
+          })
+          
+          console.log('Raw messages từ API:', rawMessages)
+          
+          // Tách user và assistant messages
+          let userMessages = rawMessages.filter(msg => msg.sender === 'user')
+          let assistantMessages = rawMessages.filter(msg => msg.sender === 'bot')
+          
+          console.log('User messages:', userMessages)
+          console.log('Assistant messages:', assistantMessages)
+          
+          // Tạo cặp user-assistant theo thứ tự logic
+          let sortedMessages = []
+          
+          // Nếu có cùng số lượng user và assistant messages
+          if (userMessages.length === assistantMessages.length) {
+            for (let i = 0; i < userMessages.length; i++) {
+              sortedMessages.push(userMessages[i])
+              sortedMessages.push(assistantMessages[i])
+            }
+          } else {
+            // Nếu không bằng nhau, thêm tất cả theo thứ tự
+            sortedMessages = [...userMessages, ...assistantMessages]
+          }
+          
+          this.messages = sortedMessages
+          console.log('Messages cuối cùng:', this.messages)
+          
+          // Scroll xuống cuối để hiển thị tin nhắn mới nhất
+          this.$nextTick(() => {
+            this.scrollToBottom()
+          })
+        } else if (response.data && Array.isArray(response.data) && response.data.length > 0) {
+          // Trường hợp API trả về array trực tiếp
+          let rawMessages = response.data.map(item => {
+            console.log('Processing item:', item)
+            return {
+              sender: item.role === 'user' ? 'user' : 'bot',
+              text: item.content || item.message || item.text || '',
+              user_id: user_id,
+              timestamp: item.timestamp ? new Date(item.timestamp).getTime() : Date.now()
+            }
+          })
+          
+          // Tách user và assistant messages
+          let userMessages = rawMessages.filter(msg => msg.sender === 'user')
+          let assistantMessages = rawMessages.filter(msg => msg.sender === 'bot')
+          
+          // Tạo cặp user-assistant theo thứ tự logic
+          let sortedMessages = []
+          
+          if (userMessages.length === assistantMessages.length) {
+            for (let i = 0; i < userMessages.length; i++) {
+              sortedMessages.push(userMessages[i])
+              sortedMessages.push(assistantMessages[i])
+            }
+          } else {
+            sortedMessages = [...userMessages, ...assistantMessages]
+          }
+          
+          this.messages = sortedMessages
+          
+          this.$nextTick(() => {
+            this.scrollToBottom()
+          })
+        } else {
+          console.log('Không có dữ liệu lịch sử hoặc format không đúng')
+        }
+      } catch (error) {
+        console.error('Lỗi khi tải lịch sử chat:', error)
+        console.error('Error details:', error.response?.data)
+        // Có thể hiển thị thông báo lỗi cho user nếu cần
+      }
+    },
     async sendMessage() {
       const message = this.userInput.trim()
       if (!message || this.loading) return
 
-      this.messages.push({ sender: 'user', text: message })
+      // Lấy user_id từ localStorage (hoặc từ Vuex/store/props nếu bạn dùng)
+      const user_id = localStorage.getItem('user_id')
+      if (!user_id) {
+        this.messages.push({
+          sender: 'bot',
+          text: '⚠️ Không tìm thấy user_id. Vui lòng đăng nhập lại.'
+        })
+        return
+      }
+
+      this.messages.push({ sender: 'user', text: message, user_id })
       this.userInput = ''
       this.loading = true
 
@@ -71,10 +196,20 @@ export default {
       })
 
       try {
-        const res = await axios.post('http://localhost:8000/chat', {
-          message
-        })
-        this.messages.push({ sender: 'bot', text: res.data.reply })
+        const res = await axios.post(
+          'http://localhost:8000/chat',
+          {
+            user_id, // Truyền user_id
+            message
+          },
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${localStorage.getItem('token')}`,
+            }
+          }
+        )
+        this.messages.push({ sender: 'bot', text: res.data.reply, user_id })
       } catch (err) {
         this.messages.push({
           sender: 'bot',
@@ -90,6 +225,14 @@ export default {
     scrollToBottom() {
       const el = this.$refs.chatBody
       el.scrollTop = el.scrollHeight
+    },
+    formatBotText(text) {
+      if (!text) return ''
+      // Đổi newline thành <br>
+      let formatted = text.replace(/\n/g, '<br>')
+      // In đậm phần trước dấu `:` (như "Tên công ty:", "Giá:")
+      // formatted = formatted.replace(/([^:\n]+):/g, '<strong>$1:</strong>')
+      return formatted
     }
   }
 }
@@ -116,7 +259,7 @@ export default {
   color: white;
   border-top-left-radius: 12px;
   border-top-right-radius: 12px;
-  text-align: center;
+  /* text-align: center;  Đã bỏ căn giữa */
 }
 
 .chat-body {

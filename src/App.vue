@@ -2,15 +2,27 @@
 <template>
   <div id="app">
     <h1>💬 Chatbox AI Chăm Sóc Khách Hàng</h1>
-    <ChatBox />
+    <Login v-if="!isLoggedIn" @login-success="handleLoginSuccess" />
+    <ChatBox v-else />
   </div>
 </template>
 
 <script>
 import ChatBox from './components/ChatBox.vue'
+import Login from './components/Login.vue'
 
 export default {
-  components: { ChatBox }
+  components: { ChatBox, Login },
+  data() {
+    return {
+      isLoggedIn: false
+    }
+  },
+  methods: {
+    handleLoginSuccess() {
+      this.isLoggedIn = true
+    }
+  }
 }
 </script>
 
