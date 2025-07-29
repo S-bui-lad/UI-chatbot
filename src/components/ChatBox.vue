@@ -20,11 +20,35 @@
             alt="user"
           />
         </div>
-        <div
-          class="bubble"
-          v-if="msg.sender === 'bot'"
-          v-html="formatBotText(msg.text)"
-        />
+        <div class="bubble" v-if="msg.sender === 'bot'">
+          <div v-if="Array.isArray(msg.text)">
+            <div
+              v-for="(step, stepIndex) in msg.text"
+              :key="stepIndex"
+              class="register-step"
+            >
+              <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <strong>Bước {{ step.step }}:</strong>
+              <p style="margin: 0;">{{ step.title }}</p>
+            </div>
+              <p v-if="step.description">{{ step.description }}</p>
+              <img 
+                v-if="step.image_url"
+                :src="step.image_url"
+                alt="step-image"
+                class="step-image"
+                style="max-width: 100%;
+                  max-height: 200px;
+                  border-radius: 8px;
+                  margin-bottom: 8px;
+                  object-fit: contain;"
+              />
+            </div>
+          </div>
+          <div v-else v-html="formatBotText(msg.text)" />
+        </div>
+
+        <!-- User chat -->
         <div class="bubble" v-else>
           <p>{{ msg.text }}</p>
         </div>
@@ -63,7 +87,6 @@ export default {
     }
   },
   async mounted() {
-    // Gọi API lịch sử chat khi component được mount
     await this.loadChatHistory()
   },
   methods: {
@@ -88,51 +111,43 @@ export default {
         
         console.log('Response từ API history:', response.data)
         
-        // Xử lý dữ liệu lịch sử chat
         if (response.data && response.data.history && Array.isArray(response.data.history)) {
-          // API trả về format { history: [...], total: 2, ... }
           let rawMessages = response.data.history.map(item => {
             console.log('Processing item:', item)
             return {
               sender: item.role === 'user' ? 'user' : 'bot',
               text: item.content || item.message || item.text || '',
               user_id: user_id,
-              timestamp: new Date(item.timestamp).getTime() // Convert string timestamp to number
+              timestamp: new Date(item.timestamp).getTime() 
             }
           })
           
           console.log('Raw messages từ API:', rawMessages)
-          
-          // Tách user và assistant messages
+      
           let userMessages = rawMessages.filter(msg => msg.sender === 'user')
           let assistantMessages = rawMessages.filter(msg => msg.sender === 'bot')
           
           console.log('User messages:', userMessages)
           console.log('Assistant messages:', assistantMessages)
           
-          // Tạo cặp user-assistant theo thứ tự logic
           let sortedMessages = []
           
-          // Nếu có cùng số lượng user và assistant messages
           if (userMessages.length === assistantMessages.length) {
             for (let i = 0; i < userMessages.length; i++) {
               sortedMessages.push(userMessages[i])
               sortedMessages.push(assistantMessages[i])
             }
           } else {
-            // Nếu không bằng nhau, thêm tất cả theo thứ tự
             sortedMessages = [...userMessages, ...assistantMessages]
           }
           
           this.messages = sortedMessages
           console.log('Messages cuối cùng:', this.messages)
           
-          // Scroll xuống cuối để hiển thị tin nhắn mới nhất
           this.$nextTick(() => {
             this.scrollToBottom()
           })
         } else if (response.data && Array.isArray(response.data) && response.data.length > 0) {
-          // Trường hợp API trả về array trực tiếp
           let rawMessages = response.data.map(item => {
             console.log('Processing item:', item)
             return {
@@ -143,11 +158,9 @@ export default {
             }
           })
           
-          // Tách user và assistant messages
           let userMessages = rawMessages.filter(msg => msg.sender === 'user')
           let assistantMessages = rawMessages.filter(msg => msg.sender === 'bot')
           
-          // Tạo cặp user-assistant theo thứ tự logic
           let sortedMessages = []
           
           if (userMessages.length === assistantMessages.length) {
@@ -170,14 +183,14 @@ export default {
       } catch (error) {
         console.error('Lỗi khi tải lịch sử chat:', error)
         console.error('Error details:', error.response?.data)
-        // Có thể hiển thị thông báo lỗi cho user nếu cần
       }
     },
     async sendMessage() {
       const message = this.userInput.trim()
       if (!message || this.loading) return
-
-      // Lấy user_id từ localStorage (hoặc từ Vuex/store/props nếu bạn dùng)
+      if (this.messages.length >= 100) {
+        this.messages.shift() 
+      }
       const user_id = localStorage.getItem('user_id')
       if (!user_id) {
         this.messages.push({
@@ -227,12 +240,10 @@ export default {
       el.scrollTop = el.scrollHeight
     },
     formatBotText(text) {
-      if (!text) return ''
-      // Đổi newline thành <br>
-      let formatted = text.replace(/\n/g, '<br>')
-      // In đậm phần trước dấu `:` (như "Tên công ty:", "Giá:")
-      // formatted = formatted.replace(/([^:\n]+):/g, '<strong>$1:</strong>')
-      return formatted
+      if (typeof text !== 'string') {
+    text = String(text); // hoặc JSON.stringify(text) nếu là object
+  }
+  return text.replace(/\n/g, '<br/>');
     }
   }
 }
@@ -312,16 +323,23 @@ export default {
 .chat-bubble.bot .bubble {
   background: #e4e6eb;
   color: #333;
-  border-bottom-left-radius: 0;
+  border-bottom-left-radius: 0; 
 }
 
 /* Typing dots */
 .typing {
   display: flex;
   gap: 4px;
-  align-items: center;
+  align-items: justify;
   height: 1.2rem;
 }
+/* .step_image {
+  max-width: 100%;
+  max-height: 200px;
+  border-radius: 8px;
+  margin-top: 8px;
+  object-fit: contain;
+} */
 .typing span {
   width: 6px;
   height: 6px;
