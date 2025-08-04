@@ -40,18 +40,59 @@
                 style="max-width: 100%;
                   max-height: 200px;
                   border-radius: 8px;
-                  margin-bottom: 4px;
-                  margin-top: 4px;
-                  object-fit: contain;"
+                  margin: 4px auto;
+                  object-fit: contain;
+                  display: block;"
               />
             </div>
           </div>
           <div v-else v-html="formatBotText(msg.text)" />
+          
+          <!-- Support form button -->
+          <div v-if="msg.requiresSupportForm" class="support-form-button">
+            <button @click="showSupportFormModal" class="support-btn">
+              <span class="btn-icon">📋</span>
+              <span class="btn-text">Điền thông tin hỗ trợ</span>
+              <span class="btn-arrow">→</span>
+            </button>
+          </div>
+          
+          <!-- Edit support request button -->
+          <div v-if="isSupportRequestSuccess(msg.text)" class="edit-support-button">
+            <button @click="showEditSupportForm(msg)" class="edit-support-btn">
+              <span class="btn-icon">✏️</span>
+              <span class="btn-text">Sửa đổi thông tin</span>
+              <span class="btn-arrow">→</span>
+            </button>
+          </div>
         </div>
 
         <!-- User chat -->
         <div class="bubble" v-else>
           <p v-html="formatBotText(msg.text)"></p>
+          
+          <!-- Selected images preview -->
+          <div v-if="msg.selectedImages && msg.selectedImages.length > 0" class="message-images">
+            <div 
+              v-for="(image, index) in msg.selectedImages" 
+              :key="index"
+              class="message-image-item"
+            >
+              <img :src="image.preview" :alt="image.name" />
+            </div>
+          </div>
+          
+          <!-- Uploaded images -->
+          <div v-if="msg.uploadedImages && msg.uploadedImages.length > 0" class="uploaded-images">
+            <div 
+              v-for="(image, index) in msg.uploadedImages" 
+              :key="index"
+              class="uploaded-image-item"
+            >
+              <img :src="image.url" :alt="image.name" />
+              <span class="image-name">{{ image.name }}</span>
+            </div>
+          </div>
         </div>
       </div>
       <div v-if="loading" class="chat-bubble bot loading">
@@ -65,19 +106,23 @@
     </div>
 
     <div class="chat-input">
-      <textarea
-        v-model="userInput"
-        @keydown.enter="handleEnter"
-        placeholder="Nhập nội dung..."
-        rows="1"
-      ></textarea>
-      <button @click="sendMessage" :disabled="loading">Gửi</button>
+      <div class="input-container">
+        <textarea
+          v-model="userInput"
+          @keydown.enter="handleEnter"
+          placeholder="Nhập nội dung..."
+          rows="1"
+        ></textarea>
+      </div>
+      <button @click="sendMessage" :disabled="loading || uploadingImage">
+        {{ uploadingImage ? '⏳' : 'Gửi' }}
+      </button>
     </div>
 
     <!-- Support Form Modal -->
     <div v-if="showSupportForm" class="support-form-overlay" @click="closeSupportForm">
       <div class="support-form" @click.stop>
-        <h3>Thông tin hỗ trợ kỹ thuật</h3>
+        <h3>{{ currentRequestId ? 'Sửa đổi thông tin hỗ trợ' : 'Thông tin hỗ trợ kỹ thuật' }}</h3>
         
         <form @submit.prevent="handleSupportSubmit">
           <div class="form-group">
@@ -150,7 +195,7 @@
 
           <div class="form-actions">
             <button type="submit" class="submit-btn" :disabled="isSubmitting">
-              {{ isSubmitting ? 'Đang gửi...' : 'Gửi yêu cầu hỗ trợ' }}
+              {{ isSubmitting ? 'Đang gửi...' : (currentRequestId ? 'Cập nhật yêu cầu hỗ trợ' : 'Gửi yêu cầu hỗ trợ') }}
             </button>
             <button type="button" @click="closeSupportForm" class="cancel-btn">
               Hủy
@@ -181,7 +226,13 @@ export default {
         email: '',
         issueDescription: '',
         images: []
-      }
+      },
+      // Image upload data
+      uploadingImage: false,
+      // Chat image data
+      selectedImages: [],
+      // Current request ID for editing
+      currentRequestId: null
     }
   },
   async mounted() {
@@ -301,22 +352,82 @@ export default {
           return
         }
 
-        // Thêm tin nhắn của user
-        this.messages.push({ sender: 'user', text: message, user_id })
+        // Thêm tin nhắn của user với preview ảnh
+        const userMessage = { 
+          sender: 'user', 
+          text: message, 
+          user_id,
+          selectedImages: [...this.selectedImages] // Copy selected images
+        }
+        this.messages.push(userMessage)
+        
+        // Clear input và selected images
         this.userInput = ''
+        this.selectedImages = []
         this.loading = true
 
         this.$nextTick(() => {
           this.scrollToBottom()
         })
 
-        // Gửi request đến server
+        // Upload ảnh nếu có
+        let uploadedImages = []
+        if (userMessage.selectedImages && userMessage.selectedImages.length > 0) {
+          this.uploadingImage = true
+          try {
+            for (const imageData of userMessage.selectedImages) {
+              const formData = new FormData()
+              formData.append('image', imageData.file)
+              formData.append('user_id', user_id)
+
+              const response = await axios.post(
+                'http://localhost:8000/upload-image',
+                formData,
+                {
+                  headers: {
+                    'Authorization': `Bearer ${localStorage.getItem('token')}`,
+                    'Content-Type': 'multipart/form-data'
+                  }
+                }
+              )
+
+              if (response.data && response.data.success) {
+                uploadedImages.push({
+                  name: imageData.name,
+                  url: response.data.image_url || response.data.url
+                })
+              }
+            }
+          } catch (error) {
+            console.error('Lỗi khi upload ảnh:', error)
+            // Vẫn tiếp tục gửi tin nhắn dù upload ảnh thất bại
+          } finally {
+            this.uploadingImage = false
+          }
+        }
+
+        // Cập nhật tin nhắn với thông tin ảnh đã upload
+        const lastMessage = this.messages[this.messages.length - 1]
+        if (lastMessage && lastMessage.sender === 'user') {
+          lastMessage.uploadedImages = uploadedImages
+          if (uploadedImages.length > 0) {
+            lastMessage.text += `\n📷 Đã upload ${uploadedImages.length} ảnh: ${uploadedImages.map(img => img.name).join(', ')}`
+          }
+        }
+
+        // Gửi request đến server với thông tin ảnh
+        const chatData = {
+          user_id,
+          message: message
+        }
+        
+        if (uploadedImages.length > 0) {
+          chatData.images = uploadedImages
+        }
+
         const res = await axios.post(
           'http://localhost:8000/chat',
-          {
-            user_id,
-            message
-          },
+          chatData,
           {
             headers: {
               'Content-Type': 'application/json',
@@ -328,12 +439,19 @@ export default {
         
         // Thêm phản hồi từ bot
         if (res.data && res.data.reply) {
-          this.messages.push({ sender: 'bot', text: res.data.reply, user_id })
+          const botMessage = { 
+            sender: 'bot', 
+            text: res.data.reply, 
+            user_id,
+            requiresSupportForm: false
+          }
           
           // Check if this is a support request
           if (res.data.metadata && res.data.metadata.requires_support_form) {
-            this.showSupportForm = true
+            botMessage.requiresSupportForm = true
           }
+          
+          this.messages.push(botMessage)
         } else {
           this.messages.push({ 
             sender: 'bot', 
@@ -395,19 +513,104 @@ export default {
     },
 
     // Support form methods
-    handleImageUpload(event) {
+    showSupportFormModal() {
+      this.showSupportForm = true
+    },
+    
+    async handleImageUpload(event) {
+      const files = Array.from(event.target.files)
+      const user_id = localStorage.getItem('user_id')
+      
+      for (const file of files) {
+        // Kiểm tra kích thước file (giới hạn 5MB)
+        if (file.size > 5 * 1024 * 1024) {
+          alert(`File ${file.name} quá lớn. Vui lòng chọn file nhỏ hơn 5MB.`)
+          continue
+        }
+
+        // Kiểm tra loại file
+        if (!file.type.startsWith('image/')) {
+          alert(`File ${file.name} không phải là ảnh hợp lệ.`)
+          continue
+        }
+
+        try {
+          // Upload ảnh lên server
+          const formData = new FormData()
+          formData.append('image', file)
+          formData.append('user_id', user_id)
+
+          const response = await axios.post(
+            'http://localhost:8000/upload-image',
+            formData,
+            {
+              headers: {
+                'Authorization': `Bearer ${localStorage.getItem('token')}`,
+                'Content-Type': 'multipart/form-data'
+              }
+            }
+          )
+
+          if (response.data && response.data.success) {
+            // Tạo preview và lưu thông tin ảnh đã upload
+            const reader = new FileReader()
+            reader.onload = (e) => {
+              this.supportForm.images.push({
+                file: file,
+                preview: e.target.result,
+                name: file.name,
+                url: response.data.image_url || response.data.url // URL từ server
+              })
+            }
+            reader.readAsDataURL(file)
+          } else {
+            alert(`Lỗi upload ảnh ${file.name}`)
+          }
+        } catch (error) {
+          console.error('Lỗi upload ảnh:', error)
+          alert(`Lỗi upload ảnh ${file.name}`)
+        }
+      }
+    },
+
+    // Chat image selection method
+    handleChatImageSelect(event) {
       const files = Array.from(event.target.files)
       
       files.forEach(file => {
+        // Kiểm tra kích thước file (giới hạn 5MB)
+        if (file.size > 5 * 1024 * 1024) {
+          alert(`File ${file.name} quá lớn. Vui lòng chọn file nhỏ hơn 5MB.`)
+          return
+        }
+
+        // Kiểm tra loại file
+        if (!file.type.startsWith('image/')) {
+          alert(`File ${file.name} không phải là ảnh hợp lệ.`)
+          return
+        }
+
+        // Tạo preview cho ảnh
         const reader = new FileReader()
         reader.onload = (e) => {
-          this.supportForm.images.push({
+          this.selectedImages.push({
             file: file,
-            preview: e.target.result
+            preview: e.target.result,
+            name: file.name
           })
         }
         reader.readAsDataURL(file)
       })
+
+      // Reset input file
+      if (this.$refs.imageInput) {
+        this.$refs.imageInput.value = ''
+      }
+    },
+
+    // Remove selected image
+    removeSelectedImage(index) {
+      this.selectedImages.splice(index, 1)
     },
 
     removeImage(index) {
@@ -425,11 +628,78 @@ export default {
         issueDescription: '',
         images: []
       }
+      // Reset current request ID
+      this.currentRequestId = null
       if (this.$refs.fileInput) {
         this.$refs.fileInput.value = ''
       }
     },
 
+
+
+    // Phát hiện tin nhắn yêu cầu hỗ trợ đã thành công
+    isSupportRequestSuccess(text) {
+      if (typeof text !== 'string') return false
+      return text.includes('✅ YÊU CẦU HỖ TRỢ ĐÃ ĐƯỢC GỬI THÀNH CÔNG') ||
+             text.includes('Mã yêu cầu') ||
+             text.includes('Trạng thái')
+    },
+
+    // Hiển thị form sửa đổi thông tin
+    showEditSupportForm(msg) {
+      // Parse thông tin từ tin nhắn
+      const text = msg.text
+      const info = this.parseSupportRequestInfo(text)
+      
+      // Điền thông tin vào form
+      this.supportForm = {
+        fullName: info.fullName || '',
+        organization: info.organization || '',
+        phone: info.phone || '',
+        email: info.email || '',
+        issueDescription: info.issueDescription || '',
+        images: []
+      }
+      
+      // Lưu mã yêu cầu để cập nhật
+      this.currentRequestId = info.requestId
+      
+      // Hiển thị form
+      this.showSupportForm = true
+    },
+
+    // Parse thông tin từ tin nhắn thành công
+    parseSupportRequestInfo(text) {
+      const info = {}
+      
+      // Parse họ tên
+      const fullNameMatch = text.match(/👤 \*\*Họ tên\*\*: (.+)/)
+      if (fullNameMatch) info.fullName = fullNameMatch[1]
+      
+      // Parse tổ chức
+      const orgMatch = text.match(/🏢 \*\*Tổ chức\/Công ty\*\*: (.+)/)
+      if (orgMatch) info.organization = orgMatch[1]
+      
+      // Parse số điện thoại
+      const phoneMatch = text.match(/📞 \*\*Số điện thoại\*\*: (.+)/)
+      if (phoneMatch) info.phone = phoneMatch[1]
+      
+      // Parse email
+      const emailMatch = text.match(/📧 \*\*Email\*\*: (.+)/)
+      if (emailMatch) info.email = emailMatch[1]
+      
+      // Parse mô tả lỗi
+      const descMatch = text.match(/🐛 \*\*Mô tả lỗi\*\*: (.+)/)
+      if (descMatch) info.issueDescription = descMatch[1]
+      
+      // Parse mã yêu cầu
+      const requestIdMatch = text.match(/🎫 \*\*Mã yêu cầu\*\*: (.+)/)
+      if (requestIdMatch) info.requestId = requestIdMatch[1]
+      
+      return info
+    },
+
+    // Cập nhật phương thức handleSupportSubmit để hỗ trợ sửa đổi
     async handleSupportSubmit() {
       if (!this.supportForm.fullName.trim()) {
         alert('Vui lòng nhập họ tên')
@@ -448,12 +718,24 @@ export default {
         formData.append('email', this.supportForm.email)
         formData.append('issue_description', this.supportForm.issueDescription)
         
+        // Thêm URL ảnh đã upload vào form data
         this.supportForm.images.forEach((image, index) => {
-          formData.append(`image_${index}`, image.file)
+          if (image.url) {
+            formData.append(`image_url_${index}`, image.url)
+          }
         })
 
+        // Nếu có mã yêu cầu, thêm vào để cập nhật
+        if (this.currentRequestId) {
+          formData.append('request_id', this.currentRequestId)
+        }
+
+        const endpoint = this.currentRequestId 
+          ? 'http://localhost:8000/update-support-request'
+          : 'http://localhost:8000/support-request'
+
         const response = await axios.post(
-          'http://localhost:8000/support-request',
+          endpoint,
           formData,
           {
             headers: {
@@ -473,7 +755,8 @@ export default {
           this.messages.push({
             sender: 'bot',
             text: `✅ ${result.message}`,
-            user_id: user_id
+            user_id: user_id,
+            requiresSupportForm: false
           })
           
           this.$nextTick(() => {
@@ -555,10 +838,14 @@ export default {
   border-radius: 16px;
   font-size: 0.95rem;
   line-height: 1.4;
+  text-align: left;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 
 .chat-bubble .bubble p {
   margin: 0.1rem 0;
+  text-align: left;
 }
 
 .chat-bubble .bubble br {
@@ -568,7 +855,11 @@ export default {
 }
 
 .chat-bubble .bubble img {
-  margin: 0.25rem 0;
+  margin: 0.25rem auto;
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
 }
 
 .chat-bubble.user .bubble {
@@ -620,15 +911,23 @@ export default {
   padding: 1rem;
   background: white;
   border-top: 1px solid #eee;
+  gap: 0.5rem;
+}
+
+.input-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
 }
 
 .chat-input textarea {
-  flex: 1;
+  width: 100%;
   padding: 0.75rem 1rem;
   font-size: 1rem;
   border: 1px solid #ccc;
   border-radius: 8px;
-  margin-right: 0.5rem;
+  resize: none;
 }
 
 .chat-input button {
@@ -642,6 +941,91 @@ export default {
 
 .chat-input button:hover {
   background: #36976f;
+}
+
+.upload-btn {
+  background: #6c757d !important;
+  margin-right: 0.5rem;
+}
+
+.upload-btn:hover {
+  background: #545b62 !important;
+}
+
+.selected-images {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.selected-image-item {
+  position: relative;
+  display: inline-block;
+}
+
+.selected-image-item img {
+  width: 60px;
+  height: 60px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 2px solid #42b983;
+}
+
+.remove-selected-image {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  background: #dc3545;
+  color: white;
+  border: none;
+  border-radius: 50%;
+  width: 20px;
+  height: 20px;
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.message-images,
+.uploaded-images {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.message-image-item,
+.uploaded-image-item {
+  position: relative;
+  display: inline-block;
+  text-align: center;
+}
+
+.message-image-item img,
+.uploaded-image-item img {
+  max-width: 150px;
+  max-height: 150px;
+  border-radius: 8px;
+  object-fit: cover;
+  border: 1px solid #ddd;
+  display: block;
+  margin: 0 auto;
+}
+
+.chat-bubble.user .message-image-item img,
+.chat-bubble.user .uploaded-image-item img {
+  border-color: #42b983;
+}
+
+.image-name {
+  display: block;
+  font-size: 0.8rem;
+  color: #666;
+  margin-top: 4px;
+  text-align: center;
 }
 
 /* Support Form Styles */
@@ -709,11 +1093,13 @@ export default {
   gap: 0.5rem;
   margin-top: 0.5rem;
   flex-wrap: wrap;
+  justify-content: center;
 }
 
 .image-item {
   position: relative;
   display: inline-block;
+  text-align: center;
 }
 
 .image-item img {
@@ -722,6 +1108,8 @@ export default {
   object-fit: cover;
   border-radius: 8px;
   border: 1px solid #ddd;
+  display: block;
+  margin: 0 auto;
 }
 
 .remove-image {
@@ -779,6 +1167,103 @@ export default {
 
 .cancel-btn:hover {
   background: #545b62;
+}
+
+/* Support form button styles */
+.support-form-button,
+.edit-support-button {
+  margin-top: 16px;
+  text-align: center;
+}
+
+.support-btn,
+.edit-support-btn {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  padding: 12px 20px;
+  border-radius: 25px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 500;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+  position: relative;
+  overflow: hidden;
+}
+
+.edit-support-btn {
+  background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+  box-shadow: 0 4px 15px rgba(40, 167, 69, 0.3);
+}
+
+.support-btn::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+  transition: left 0.5s;
+}
+
+.support-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+}
+
+.edit-support-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(40, 167, 69, 0.4);
+}
+
+.support-btn:hover::before,
+.edit-support-btn:hover::before {
+  left: 100%;
+}
+
+.support-btn:active,
+.edit-support-btn:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 10px rgba(102, 126, 234, 0.3);
+}
+
+.edit-support-btn:active {
+  box-shadow: 0 2px 10px rgba(40, 167, 69, 0.3);
+}
+
+.btn-icon {
+  font-size: 1.1rem;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.1));
+}
+
+.btn-text {
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.btn-arrow {
+  font-size: 1.2rem;
+  font-weight: bold;
+  transition: transform 0.3s ease;
+}
+
+.support-btn:hover .btn-arrow,
+.edit-support-btn:hover .btn-arrow {
+  transform: translateX(3px);
+}
+
+/* Step image styles */
+.step-image {
+  display: block;
+  margin: 4px auto;
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
 }
 
 /* Responsive */
